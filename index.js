@@ -1074,12 +1074,11 @@ const customScript = ({ api }) => {
     }
 };
 
-
 // --- Appstate Management and Login ---
 const appStatePlaceholder = "(›^-^)›";
 const fbstateFile = "appstate.json";
 
-// NEW: User-agent list for randomization
+// Enhanced user-agent list for randomization
 const userAgents = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -1090,48 +1089,46 @@ const userAgents = [
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.1"
 ];
 
-// NEW: Login stability variables
+// Login stability variables
 let loginAttempts = 0;
 let isLoggingIn = false;
 let lastLoginAttempt = 0;
 let isBlocked = false;
 let lastBlockCheck = 0;
-let server = null; // Variable to hold the Express server instance
+let server = null;
 
-// NEW: Function to check if account is blocked
+// Enhanced function to check if account is blocked
 async function checkBlockStatus(api) {
     try {
-        // Check if we've recently checked block status
         if (Date.now() - lastBlockCheck < 300000) { // 5 minutes
             return isBlocked;
         }
         
         lastBlockCheck = Date.now();
         
-        // Try to perform an API call that would fail if blocked
+        // Try a simple API call to check if blocked
         const threadList = await api.getThreadList(1, null, ['INBOX']);
         
-        // If we got this far, we're not blocked
         if (isBlocked) {
             logger.log("Account is no longer blocked", "BLOCK_STATUS");
             isBlocked = false;
         }
         return false;
     } catch (e) {
-        if (e.message.includes('blocked') || e.message.includes('restricted') || 
-            e.message.includes('temporarily unavailable')) {
+        const errorMsg = e.message.toLowerCase();
+        if (errorMsg.includes('blocked') || errorMsg.includes('restricted') || 
+            errorMsg.includes('temporarily unavailable')) {
             if (!isBlocked) {
                 logger.err("Account appears to be blocked by Facebook", "BLOCK_STATUS");
             }
             isBlocked = true;
             return true;
         }
-        // Other errors don't necessarily mean we're blocked
         return false;
     }
 }
 
-// NEW: Enhanced login function with retry logic and block detection
+// Completely rewritten performLogin function with better error handling
 async function performLogin(loginData, fcaLoginOptions) {
     return new Promise((resolve, reject) => {
         if (isLoggingIn) {
@@ -1144,54 +1141,113 @@ async function performLogin(loginData, fcaLoginOptions) {
 
         logger.log(`Attempting login (attempt ${loginAttempts}/5)`, "LOGIN_ATTEMPT");
 
-        // Check if the account has been recently blocked. If so, apply a long cooldown.
+        // Enhanced block status check
         if (isBlocked) {
-            // Wait 2 hours before retrying after a block. This gives the user time to verify.
-            const cooldownTime = 7200000; // 2 hours in milliseconds
+            const cooldownTime = 7200000; // 2 hours
             const timeSinceBlock = Date.now() - lastBlockCheck;
             if (timeSinceBlock < cooldownTime) {
                 isLoggingIn = false;
                 const remainingMinutes = Math.ceil((cooldownTime - timeSinceBlock) / 60000);
-                return reject(new Error(`Account is currently in cooldown after being blocked. Please wait ${remainingMinutes} minutes before retrying.`));
+                return reject(new Error(`Account blocked. Please wait ${remainingMinutes} minutes before retrying.`));
             } else {
-                // Cooldown is over, reset block status and try again.
-                logger.log("Block cooldown period has ended. Retrying login...", "BLOCK_COOLDOWN");
+                logger.log("Block cooldown period ended. Retrying login...", "BLOCK_COOLDOWN");
                 isBlocked = false;
             }
         }
-        
-        // NEW: Select a random user agent for this login attempt
+
+        // Validate login data
+        if (!loginData) {
+            isLoggingIn = false;
+            return reject(new Error("No login data provided"));
+        }
+
+        // Validate credentials if using email/password
+        if (loginData.email && loginData.password) {
+            if (typeof loginData.email !== 'string' || typeof loginData.password !== 'string') {
+                isLoggingIn = false;
+                return reject(new Error("Email and password must be strings"));
+            }
+            
+            loginData.email = loginData.email.trim();
+            loginData.password = loginData.password.trim();
+            
+            if (!loginData.email || !loginData.password) {
+                isLoggingIn = false;
+                return reject(new Error("Email and password cannot be empty"));
+            }
+        }
+
+        // Random user agent selection
         const randomUserAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
         fcaLoginOptions.userAgent = randomUserAgent;
         logger.log(`Using User-Agent: ${randomUserAgent}`, "USER_AGENT");
 
-        login(loginData, fcaLoginOptions, (err, api) => {
+        // Enhanced error handler
+        const handleLoginError = (err) => {
             isLoggingIn = false;
             
             if (err) {
-                logger.err(`Login attempt ${loginAttempts} failed: ${err.error || err.message}`, "LOGIN_FAILED");
+                const errorMsg = (err.error || err.message || '').toLowerCase();
                 
-                // Detect block status from login error more broadly
-                const errorString = JSON.stringify(err).toLowerCase();
-                if (errorString.includes('blocked') || errorString.includes('restricted') ||
-                    errorString.includes('unavailable') || errorString.includes('login-approval') ||
-                    errorString.includes('unknown location')) {
+                if (errorMsg.includes('incorrect username/password')) {
+                    logger.err("Login failed: Incorrect email or password", "LOGIN_FAILED");
+                    return reject(new Error("Incorrect email or password"));
+                }
+                else if (errorMsg.includes('login approval') || errorMsg.includes('checkpoint')) {
+                    logger.err("Login approval required - check Facebook", "LOGIN_FAILED");
+                    return reject(new Error("Login approval needed. Check your Facebook account"));
+                }
+                else if (errorMsg.includes('blocked') || errorMsg.includes('restricted')) {
                     isBlocked = true;
                     lastBlockCheck = Date.now();
-                    reject(new Error("Account is blocked. Please check Facebook and verify your account."));
+                    logger.err("Account blocked by Facebook", "BLOCK_STATUS");
+                    return reject(new Error("Account blocked. Please check Facebook"));
                 }
-                else if (err.error === 'Incorrect username/password.') {
-                    reject(new Error("Incorrect email or password. Please check your credentials."));
-                }
-                else {
-                    reject(err);
-                }
-            } else {
-                loginAttempts = 0; // Reset on success
-                isBlocked = false; // Reset block status on successful login
-                resolve(api);
             }
-        });
+            
+            logger.err(`Login attempt ${loginAttempts} failed: ${err.message || JSON.stringify(err)}`, "LOGIN_FAILED");
+            reject(err || new Error("Unknown login error"));
+        };
+
+        // Enhanced success handler
+        const handleLoginSuccess = (api) => {
+            if (!api) {
+                return handleLoginError(new Error("No API object returned"));
+            }
+
+            // Verify we actually got a valid API object
+            try {
+                if (typeof api.getCurrentUserID !== 'function') {
+                    throw new Error("Invalid API object received");
+                }
+                
+                isLoggingIn = false;
+                loginAttempts = 0;
+                isBlocked = false;
+                resolve(api);
+            } catch (e) {
+                handleLoginError(e);
+            }
+        };
+
+        // Execute login with timeout
+        const loginTimeout = setTimeout(() => {
+            handleLoginError(new Error("Login timed out (no response after 60 seconds)"));
+        }, 60000);
+
+        try {
+            login(loginData, fcaLoginOptions, (err, api) => {
+                clearTimeout(loginTimeout);
+                if (err) {
+                    handleLoginError(err);
+                } else {
+                    handleLoginSuccess(api);
+                }
+            });
+        } catch (e) {
+            clearTimeout(loginTimeout);
+            handleLoginError(e);
+        }
     });
 }
 
@@ -1226,9 +1282,7 @@ function normalizeVersion(version) {
 async function checkAndUpdateDependencies() {
     if (global.config.UPDATE && global.config.UPDATE.Package) {
         try {
-            for (const [dependency, currentVersion] of Object.entries(
-                    packageJson.dependencies
-                )) {
+            for (const [dependency, currentVersion] of Object.entries(packageJson.dependencies)) {
                 if (global.config.UPDATE.EXCLUDED.includes(dependency)) {
                     logger.log(`Skipping update check for excluded package: ${dependency}`, "UPDATE_CHECK");
                     continue;
@@ -1239,21 +1293,22 @@ async function checkAndUpdateDependencies() {
 
                 if (semver.neq(normalizedCurrentVersion, latestVersion)) {
                     logger.warn(
-                        `There is a newer version ${chalk.yellow(`(^${latestVersion})`)} available for ${chalk.yellow(dependency)}. ` +
-                        `Please manually update it by running 'npm install ${dependency}@latest'`, "MANUAL_UPDATE"
+                        `New version ${chalk.yellow(`(^${latestVersion})`)} available for ${chalk.yellow(dependency)}. ` +
+                        `Run 'npm install ${dependency}@latest' to update`, "MANUAL_UPDATE"
                     );
                 } else {
                     logger.log(`Package ${dependency} is up to date.`, "UPDATE_CHECK");
                 }
             }
         } catch (error) {
-            logger.err(`Error checking and updating dependencies: ${error.message}`, "DEPENDENCY_UPDATE_ERROR");
+            logger.err(`Error checking dependencies: ${error.message}`, "DEPENDENCY_UPDATE_ERROR");
         }
     } else {
         logger.log('Automatic package updates are disabled in config.json.', 'UPDATE');
     }
 }
 
+// ... [rest of your existing code remains exactly the same] ...
 // --- Global Client Object Initialization ---
 global.client = {
     commands: new Map(),
