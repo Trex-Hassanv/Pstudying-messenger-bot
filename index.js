@@ -1251,6 +1251,7 @@ async function performLogin(loginData, fcaLoginOptions) {
     });
 }
 
+// ================ PASTE THE SECOND HALF BELOW THIS LINE ================
 const delayedLog = async (message) => {
     const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     for (const char of message) {
@@ -1308,7 +1309,6 @@ async function checkAndUpdateDependencies() {
     }
 }
 
-// ... [rest of your existing code remains exactly the same] ...
 // --- Global Client Object Initialization ---
 global.client = {
     commands: new Map(),
@@ -1571,7 +1571,6 @@ global.getText = function(...args) {
     }
     return `[Text retrieval failed for ${args[0]}.${args[1]}]`;
 };
-
 
 // --- Main Bot Initialization Function ---
 async function onBot() {
