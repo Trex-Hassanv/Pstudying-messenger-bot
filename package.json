@@ -17,6 +17,7 @@
     "get-latest-version": "^2.0.0",
     "hassan-fca": "github:TRexHassan565/HassAn-fca-mate",
     "moment-timezone": "^0.5.48",
+    "nexus-fca": "^2.0.7",
     "node-cron": "^3.0.3",
     "semver": "^7.5.4",
     "sharp": "^0.33.4"
